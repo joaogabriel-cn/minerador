@@ -92,3 +92,7 @@ app.delete('/accounts/:id', auth, async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
+
+process.on('unhandledRejection', (err) => {
+    console.error('Erro não tratado:', err);
+});
