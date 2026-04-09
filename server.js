@@ -96,3 +96,13 @@ app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
 process.on('unhandledRejection', (err) => {
     console.error('Erro não tratado:', err);
 });
+
+// Keep-alive: auto ping a cada 10 minutos para não dormir no plano free
+const SELF_URL = process.env.RENDER_EXTERNAL_URL;
+if (SELF_URL) {
+    setInterval(() => {
+        fetch(SELF_URL + '/ping').catch(() => {});
+    }, 10 * 60 * 1000);
+}
+
+app.get('/ping', (req, res) => res.json({ ok: true }));
