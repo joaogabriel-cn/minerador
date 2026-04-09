@@ -2,34 +2,19 @@ const express  = require('express');
 const bcrypt   = require('bcryptjs');
 const jwt      = require('jsonwebtoken');
 const cors     = require('cors');
-const mongoose = require('mongoose');
+const { createClient } = require('@supabase/supabase-js');
 
 const app        = express();
 const JWT_SECRET = process.env.JWT_SECRET || 'troque-este-segredo';
-const MONGO_URI  = process.env.MONGO_URI;
+const ADMIN_KEY  = process.env.ADMIN_KEY  || 'mb-admin';
+
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_KEY
+);
 
 app.use(cors());
 app.use(express.json());
-
-// ─── Conexão MongoDB ───────────────────────────────────────────────────────────
-
-mongoose.connect(MONGO_URI)
-    .then(() => console.log('MongoDB conectado'))
-    .catch(err => { console.error('Erro MongoDB:', err); process.exit(1); });
-
-// ─── Models ───────────────────────────────────────────────────────────────────
-
-const User = mongoose.model('User', new mongoose.Schema({
-    username: { type: String, unique: true },
-    password: String
-}));
-
-const Account = mongoose.model('Account', new mongoose.Schema({
-    sessionid:   String,
-    ds_user_id:  String,
-    username:    String,
-    addedBy:     String
-}, { strict: false }));
 
 // ─── Auth middleware ───────────────────────────────────────────────────────────
 
@@ -48,23 +33,22 @@ function auth(req, res, next) {
 
 app.post('/auth/register', async (req, res) => {
     const { username, password, adminKey } = req.body;
-    if (adminKey !== (process.env.ADMIN_KEY || 'mb-admin')) {
-        return res.status(403).json({ error: 'Chave de admin incorreta.' });
-    }
+    if (adminKey !== ADMIN_KEY) return res.status(403).json({ error: 'Chave de admin incorreta.' });
     if (!username || !password) return res.status(400).json({ error: 'Usuário e senha obrigatórios.' });
-    try {
-        const hash = await bcrypt.hash(password, 10);
-        await User.create({ username, password: hash });
-        res.json({ success: true });
-    } catch (err) {
-        if (err.code === 11000) return res.status(409).json({ error: 'Usuário já existe.' });
-        res.status(500).json({ error: 'Erro interno.' });
-    }
+
+    const { data: existing } = await supabase.from('users').select('id').eq('username', username).single();
+    if (existing) return res.status(409).json({ error: 'Usuário já existe.' });
+
+    const hash = await bcrypt.hash(password, 10);
+    const { error } = await supabase.from('users').insert({ username, password: hash });
+    if (error) return res.status(500).json({ error: 'Erro ao criar usuário.' });
+
+    res.json({ success: true });
 });
 
 app.post('/auth/login', async (req, res) => {
     const { username, password } = req.body;
-    const user = await User.findOne({ username });
+    const { data: user } = await supabase.from('users').select('*').eq('username', username).single();
     if (!user || !await bcrypt.compare(password, user.password)) {
         return res.status(401).json({ error: 'Usuário ou senha incorretos.' });
     }
@@ -75,28 +59,33 @@ app.post('/auth/login', async (req, res) => {
 // ─── Contas ────────────────────────────────────────────────────────────────────
 
 app.get('/accounts', auth, async (req, res) => {
-    const accounts = await Account.find({}, { __v: 0 });
-    res.json(accounts);
+    const { data, error } = await supabase.from('accounts').select('*').order('created_at');
+    if (error) return res.status(500).json({ error: 'Erro ao buscar contas.' });
+    res.json(data);
 });
 
 app.post('/accounts', auth, async (req, res) => {
     const account = req.body;
-    const isDupe = await Account.findOne(
-        account.ds_user_id
-            ? { ds_user_id: account.ds_user_id }
-            : { sessionid: account.sessionid }
-    );
-    if (isDupe) return res.status(409).json({ error: 'Conta já cadastrada.' });
-    await Account.create({ ...account, addedBy: req.user.username });
-    const accounts = await Account.find({}, { __v: 0 });
-    res.json({ success: true, accounts });
+
+    const query = account.ds_user_id
+        ? supabase.from('accounts').select('id').eq('ds_user_id', account.ds_user_id)
+        : supabase.from('accounts').select('id').eq('sessionid', account.sessionid);
+    const { data: existing } = await query.single();
+    if (existing) return res.status(409).json({ error: 'Conta já cadastrada.' });
+
+    const { error } = await supabase.from('accounts').insert({ ...account, added_by: req.user.username });
+    if (error) return res.status(500).json({ error: 'Erro ao salvar conta.' });
+
+    const { data } = await supabase.from('accounts').select('*').order('created_at');
+    res.json({ success: true, accounts: data });
 });
 
 app.delete('/accounts/:id', auth, async (req, res) => {
-    const result = await Account.findByIdAndDelete(req.params.id);
-    if (!result) return res.status(404).json({ error: 'Conta não encontrada.' });
-    const accounts = await Account.find({}, { __v: 0 });
-    res.json({ success: true, accounts });
+    const { error } = await supabase.from('accounts').delete().eq('id', req.params.id);
+    if (error) return res.status(500).json({ error: 'Erro ao remover conta.' });
+
+    const { data } = await supabase.from('accounts').select('*').order('created_at');
+    res.json({ success: true, accounts: data });
 });
 
 // ─── Start ─────────────────────────────────────────────────────────────────────
